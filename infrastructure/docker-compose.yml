@@ -10,7 +10,6 @@ services:
       - "9000:9000"  # Native interface
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./clickhouse/init:/docker-entrypoint-initdb.d
       - ./clickhouse/config/users.xml:/etc/clickhouse-server/users.d/users.xml
     environment:
       - CLICKHOUSE_DB=game_analytics
@@ -26,6 +25,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Инициализация ClickHouse (создание базы и таблиц)
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:24.1
+    container_name: clickhouse-init
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./clickhouse/init:/init
+    entrypoint: >
+      sh -c "
+        echo 'Waiting for ClickHouse...' &&
+        sleep 5 &&
+        echo 'Creating database and tables...' &&
+        clickhouse-client --host clickhouse --user admin --password admin123 --multiquery < /init/01_create_tables.sql &&
+        echo 'ClickHouse initialization complete!'
+      "
 
   # Apache Superset - BI платформа
   superset:
