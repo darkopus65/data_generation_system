@@ -107,40 +107,56 @@ def read_parquet(filepath: Path, batch_size: int) -> Iterator[list[dict]]:
         yield batch
 
 
+def to_string(value) -> str:
+    """Convert any value to string safely."""
+    if value is None:
+        return ""
+    if hasattr(value, 'isoformat'):  # date/datetime objects
+        return value.isoformat()
+    return str(value)
+
+
 def flatten_event(event: dict) -> dict:
     """Flatten nested event structure for ClickHouse."""
     device = event.get("device", {})
     user_props = event.get("user_properties", {})
 
     # Fix timestamp format: replace 'Z' with '+00:00' for Python compatibility
-    timestamp = event.get("event_timestamp", "")
+    timestamp = to_string(event.get("event_timestamp", ""))
     if timestamp.endswith("Z"):
         timestamp = timestamp[:-1] + "+00:00"
 
+    # Handle cohort_date - could be string or date object
+    cohort_date = user_props.get("cohort_date", "1970-01-01")
+    if hasattr(cohort_date, 'isoformat'):
+        cohort_date = cohort_date.isoformat()
+    elif not isinstance(cohort_date, str):
+        cohort_date = str(cohort_date)
+
     return {
-        "event_id": event.get("event_id", ""),
-        "event_name": event.get("event_name", ""),
+        "event_id": to_string(event.get("event_id", "")),
+        "event_name": to_string(event.get("event_name", "")),
         "event_timestamp": timestamp,
-        "user_id": event.get("user_id", ""),
-        "session_id": event.get("session_id", ""),
+        "user_id": to_string(event.get("user_id", "")),
+        "session_id": to_string(event.get("session_id", "")),
         # Device
-        "device_id": device.get("device_id", ""),
-        "platform": device.get("platform", ""),
-        "os_version": device.get("os_version", ""),
-        "app_version": device.get("app_version", ""),
-        "device_model": device.get("device_model", ""),
-        "country": device.get("country", ""),
-        "language": device.get("language", ""),
+        "device_id": to_string(device.get("device_id", "")),
+        "platform": to_string(device.get("platform", "")),
+        "os_version": to_string(device.get("os_version", "")),
+        "app_version": to_string(device.get("app_version", "")),
+        "device_model": to_string(device.get("device_model", "")),
+        "country": to_string(device.get("country", "")),
+        "language": to_string(device.get("language", "")),
         # User properties
-        "player_level": user_props.get("player_level", 0),
-        "vip_level": user_props.get("vip_level", 0),
-        "total_spent_usd": user_props.get("total_spent_usd", 0.0),
-        "days_since_install": user_props.get("days_since_install", 0),
-        "cohort_date": user_props.get("cohort_date", "1970-01-01"),
-        "current_chapter": user_props.get("current_chapter", 0),
+        "player_level": int(user_props.get("player_level", 0) or 0),
+        "vip_level": int(user_props.get("vip_level", 0) or 0),
+        "total_spent_usd": float(user_props.get("total_spent_usd", 0.0) or 0.0),
+        "days_since_install": int(user_props.get("days_since_install", 0) or 0),
+        "cohort_date": cohort_date,
+        "current_chapter": int(user_props.get("current_chapter", 0) or 0),
         # JSON fields
-        "ab_tests": json.dumps(event.get("ab_tests", {})),
-        "event_properties": json.dumps(event.get("event_properties", {})),
+        "ab_tests": json.dumps(event.get("ab_tests", {}) or {}),
+        "event_properties": json.dumps(event.get("event_properties", {}) or {}),
     }
 
 
