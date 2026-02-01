@@ -107,6 +107,9 @@ def read_parquet(filepath: Path, batch_size: int) -> Iterator[list[dict]]:
         yield batch
 
 
+from datetime import date, datetime
+
+
 def to_string(value) -> str:
     """Convert any value to string safely."""
     if value is None:
@@ -116,27 +119,59 @@ def to_string(value) -> str:
     return str(value)
 
 
+def to_date(value) -> date:
+    """Convert value to date object for ClickHouse Date type."""
+    if value is None:
+        return date(1970, 1, 1)
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        # Parse YYYY-MM-DD format
+        try:
+            return datetime.strptime(value[:10], "%Y-%m-%d").date()
+        except:
+            return date(1970, 1, 1)
+    return date(1970, 1, 1)
+
+
+def to_datetime(value) -> datetime:
+    """Convert value to datetime object for ClickHouse DateTime type."""
+    if value is None:
+        return datetime(1970, 1, 1)
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, str):
+        # Handle ISO format with Z or +00:00
+        try:
+            ts = value.replace("Z", "+00:00")
+            # Remove timezone for naive datetime (ClickHouse prefers naive)
+            if "+" in ts:
+                ts = ts.split("+")[0]
+            return datetime.fromisoformat(ts)
+        except:
+            return datetime(1970, 1, 1)
+    return datetime(1970, 1, 1)
+
+
 def flatten_event(event: dict) -> dict:
     """Flatten nested event structure for ClickHouse."""
     device = event.get("device", {})
     user_props = event.get("user_properties", {})
 
-    # Fix timestamp format: replace 'Z' with '+00:00' for Python compatibility
-    timestamp = to_string(event.get("event_timestamp", ""))
-    if timestamp.endswith("Z"):
-        timestamp = timestamp[:-1] + "+00:00"
+    # Convert timestamp to datetime object
+    timestamp = to_datetime(event.get("event_timestamp"))
 
-    # Handle cohort_date - could be string or date object
-    cohort_date = user_props.get("cohort_date", "1970-01-01")
-    if hasattr(cohort_date, 'isoformat'):
-        cohort_date = cohort_date.isoformat()
-    elif not isinstance(cohort_date, str):
-        cohort_date = str(cohort_date)
+    # Convert cohort_date to date object
+    cohort_date = to_date(user_props.get("cohort_date"))
 
     return {
         "event_id": to_string(event.get("event_id", "")),
         "event_name": to_string(event.get("event_name", "")),
-        "event_timestamp": timestamp,
+        "event_timestamp": timestamp,  # datetime object
         "user_id": to_string(event.get("user_id", "")),
         "session_id": to_string(event.get("session_id", "")),
         # Device
@@ -152,7 +187,7 @@ def flatten_event(event: dict) -> dict:
         "vip_level": int(user_props.get("vip_level", 0) or 0),
         "total_spent_usd": float(user_props.get("total_spent_usd", 0.0) or 0.0),
         "days_since_install": int(user_props.get("days_since_install", 0) or 0),
-        "cohort_date": cohort_date,
+        "cohort_date": cohort_date,  # date object
         "current_chapter": int(user_props.get("current_chapter", 0) or 0),
         # JSON fields
         "ab_tests": json.dumps(event.get("ab_tests", {}) or {}),
