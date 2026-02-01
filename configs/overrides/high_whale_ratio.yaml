@@ -1,0 +1,16 @@
+# High Whale Ratio Override
+# Scenario with more paying players (for studying whale behavior)
+
+player_types:
+  whale:
+    share: 0.01           # 1% instead of 0.3%
+  dolphin:
+    share: 0.03           # 3% instead of 1.2%
+  minnow:
+    share: 0.05           # 5% instead of 3.5%
+  free_engaged:
+    share: 0.25           # Same
+  free_casual:
+    share: 0.41           # Reduced to sum = 1
+  free_churner:
+    share: 0.25           # Same

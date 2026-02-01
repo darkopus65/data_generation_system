@@ -1,0 +1,12 @@
+# Small Test Override
+# For quick testing with minimal data
+
+simulation:
+  duration_days: 7
+
+installs:
+  total: 500
+
+scenarios:
+  bad_traffic:
+    enabled: false

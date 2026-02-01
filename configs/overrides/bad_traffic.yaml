@@ -1,0 +1,12 @@
+# Bad Traffic Scenario Override
+# Simulates a burst of low-quality traffic on day 25
+
+scenarios:
+  bad_traffic:
+    enabled: true
+    day: 25
+    source_name: "fake_network"
+    volume: 2000
+    retention_modifier: 0.3
+    monetization_modifier: 0.1
+    bot_ratio: 0.4
