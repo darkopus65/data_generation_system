@@ -112,10 +112,15 @@ def flatten_event(event: dict) -> dict:
     device = event.get("device", {})
     user_props = event.get("user_properties", {})
 
+    # Fix timestamp format: replace 'Z' with '+00:00' for Python compatibility
+    timestamp = event.get("event_timestamp", "")
+    if timestamp.endswith("Z"):
+        timestamp = timestamp[:-1] + "+00:00"
+
     return {
         "event_id": event.get("event_id", ""),
         "event_name": event.get("event_name", ""),
-        "event_timestamp": event.get("event_timestamp", ""),
+        "event_timestamp": timestamp,
         "user_id": event.get("user_id", ""),
         "session_id": event.get("session_id", ""),
         # Device
