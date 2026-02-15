@@ -1,3 +1,7 @@
+-- ВАЖНО: Все запросы в этом файле работают со всеми прогонами (run_id) одновременно.
+-- Для фильтрации по конкретному прогону добавьте: WHERE run_id = 'baseline'
+-- Для сравнения прогонов используйте: GROUP BY run_id
+--
 -- ============================================================================
 -- SQL запросы для дашбордов Superset
 -- Создать как Saved Queries или использовать в Virtual Datasets
@@ -415,3 +419,74 @@ FROM game_analytics.events
 WHERE event_name = 'session_start'
 GROUP BY cohort_date
 ORDER BY cohort_date;
+
+
+-- ============================================================================
+-- RUN COMPARISON (сравнение прогонов)
+-- ============================================================================
+
+-- 26. Список загруженных прогонов
+-- Тип чарта: Table
+SELECT
+    run_id,
+    count() as total_events,
+    uniqExact(user_id) as unique_users,
+    min(toDate(event_timestamp)) as first_date,
+    max(toDate(event_timestamp)) as last_date,
+    dateDiff('day', first_date, last_date) + 1 as days
+FROM game_analytics.events
+GROUP BY run_id
+ORDER BY run_id;
+
+-- 27. Сравнение ключевых метрик между прогонами
+-- Тип чарта: Table
+SELECT
+    run_id,
+    uniqExact(user_id) as total_users,
+    countIf(event_name = 'iap_purchase') as total_purchases,
+    uniqExactIf(user_id, event_name = 'iap_purchase') as paying_users,
+    round(paying_users / total_users * 100, 2) as conversion_pct,
+    sumIf(JSONExtractFloat(event_properties, 'price_usd'), event_name = 'iap_purchase') as revenue,
+    round(revenue / total_users, 2) as arpu
+FROM game_analytics.events
+GROUP BY run_id
+ORDER BY run_id;
+
+-- 28. Retention по прогонам (D1/D7/D30)
+-- Тип чарта: Grouped Bar Chart
+SELECT
+    run_id,
+    uniqExact(user_id) as d0_users,
+    uniqExactIf(user_id, days_since_install >= 1) as d1_users,
+    uniqExactIf(user_id, days_since_install >= 7) as d7_users,
+    uniqExactIf(user_id, days_since_install >= 30) as d30_users,
+    round(d1_users / d0_users * 100, 2) as d1_retention,
+    round(d7_users / d0_users * 100, 2) as d7_retention,
+    round(d30_users / d0_users * 100, 2) as d30_retention
+FROM game_analytics.events
+WHERE event_name = 'session_start'
+GROUP BY run_id
+ORDER BY run_id;
+
+-- 29. DAU по прогонам
+-- Тип чарта: Line Chart с facet по run_id
+SELECT
+    run_id,
+    toDate(event_timestamp) as date,
+    uniqExact(user_id) as dau
+FROM game_analytics.events
+WHERE event_name = 'session_start'
+GROUP BY run_id, date
+ORDER BY run_id, date;
+
+-- 30. Revenue по прогонам
+-- Тип чарта: Line Chart с facet по run_id
+SELECT
+    run_id,
+    toDate(event_timestamp) as date,
+    sum(JSONExtractFloat(event_properties, 'price_usd')) as revenue_usd,
+    uniqExact(user_id) as paying_users
+FROM game_analytics.events
+WHERE event_name = 'iap_purchase'
+GROUP BY run_id, date
+ORDER BY run_id, date;

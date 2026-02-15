@@ -4,6 +4,9 @@ CREATE DATABASE IF NOT EXISTS game_analytics;
 -- Основная таблица событий
 CREATE TABLE IF NOT EXISTS game_analytics.events
 (
+    -- Идентификатор прогона генератора
+    run_id LowCardinality(String),
+
     -- Идентификаторы
     event_id String,
     event_name LowCardinality(String),
@@ -41,15 +44,16 @@ CREATE TABLE IF NOT EXISTS game_analytics.events
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(event_date)
-ORDER BY (event_name, user_id, event_timestamp)
+ORDER BY (run_id, event_name, user_id, event_timestamp)
 SETTINGS index_granularity = 8192;
 
 -- Материализованное представление для быстрых агрегаций по дням
 CREATE MATERIALIZED VIEW IF NOT EXISTS game_analytics.events_daily_mv
 ENGINE = SummingMergeTree()
 PARTITION BY toYYYYMM(event_date)
-ORDER BY (event_date, event_name, platform, country)
+ORDER BY (run_id, event_date, event_name, platform, country)
 AS SELECT
+    run_id,
     toDate(event_timestamp) as event_date,
     event_name,
     platform,
@@ -58,14 +62,15 @@ AS SELECT
     uniqExact(user_id) as unique_users,
     uniqExact(session_id) as unique_sessions
 FROM game_analytics.events
-GROUP BY event_date, event_name, platform, country;
+GROUP BY run_id, event_date, event_name, platform, country;
 
 -- Представление для retention анализа
 CREATE MATERIALIZED VIEW IF NOT EXISTS game_analytics.user_retention_mv
 ENGINE = AggregatingMergeTree()
 PARTITION BY toYYYYMM(cohort_date)
-ORDER BY (cohort_date, platform)
+ORDER BY (run_id, cohort_date, platform)
 AS SELECT
+    run_id,
     cohort_date,
     platform,
     uniqState(user_id) as users_d0,
@@ -74,14 +79,15 @@ AS SELECT
     uniqIfState(user_id, days_since_install >= 30) as users_d30
 FROM game_analytics.events
 WHERE event_name = 'session_start'
-GROUP BY cohort_date, platform;
+GROUP BY run_id, cohort_date, platform;
 
 -- Представление для IAP анализа
 CREATE MATERIALIZED VIEW IF NOT EXISTS game_analytics.iap_stats_mv
 ENGINE = SummingMergeTree()
 PARTITION BY toYYYYMM(event_date)
-ORDER BY (event_date, platform, country)
+ORDER BY (run_id, event_date, platform, country)
 AS SELECT
+    run_id,
     toDate(event_timestamp) as event_date,
     platform,
     country,
@@ -93,7 +99,7 @@ AS SELECT
     ) as revenue_usd
 FROM game_analytics.events
 WHERE event_name IN ('iap_purchase', 'iap_initiated', 'iap_failed')
-GROUP BY event_date, platform, country;
+GROUP BY run_id, event_date, platform, country;
 
 -- Индекс для быстрого поиска по user_id
 ALTER TABLE game_analytics.events ADD INDEX idx_user_id user_id TYPE bloom_filter GRANULARITY 1;
