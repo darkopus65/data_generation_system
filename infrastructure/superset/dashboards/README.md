@@ -16,7 +16,7 @@ cd ..
 python generate.py --seed 42
 
 # Загрузка в ClickHouse
-python scripts/load_to_clickhouse.py --input output/run_*/events.jsonl.gz --truncate
+python scripts/load_to_clickhouse.py --input output/run_*/events.jsonl.gz --run-id baseline
 ```
 
 ### 2. Автоматическая настройка (опционально)
@@ -128,6 +128,20 @@ clickhousedb://superset:superset123@clickhouse:8123/game_analytics
 
 ---
 
+### 🔄 Dashboard 5: Run Comparison
+
+Сравнение метрик между прогонами генератора.
+
+| Чарт | Тип | SQL запрос |
+|------|-----|------------|
+| Загруженные прогоны | Table | #26 |
+| Ключевые метрики | Table | #27 |
+| Retention по прогонам | Grouped Bar | #28 |
+| DAU по прогонам | Line Chart | #29 |
+| Revenue по прогонам | Line Chart | #30 |
+
+---
+
 ## Создание чартов из SQL
 
 ### Вариант 1: SQL Lab (рекомендуется)
@@ -176,6 +190,7 @@ clickhousedb://superset:superset123@clickhouse:8123/game_analytics
    - **Country** — страна
    - **Install source** — источник трафика
    - **A/B test variant** — группа теста
+   - **Run ID** — прогон генератора (run_id)
 
 ---
 

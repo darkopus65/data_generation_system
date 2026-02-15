@@ -155,7 +155,8 @@ data_generation_system/
 │   ├── superset/                 # Конфиг Superset
 │   └── README.md                 # Инструкция по развёртыванию
 ├── scripts/
-│   └── load_to_clickhouse.py     # Загрузка данных в ClickHouse
+│   ├── load_to_clickhouse.py     # Загрузка данных в ClickHouse
+│   └── setup_teams.py            # Настройка командных баз
 ├── tests/                        # Юнит-тесты
 ├── docs/                         # Спецификации (GDD, Event Taxonomy)
 ├── output/                       # Результаты генерации (gitignored)
@@ -217,7 +218,7 @@ python generate.py --seed 42
 
 # 3. Загрузка в ClickHouse
 pip install clickhouse-connect
-python scripts/load_to_clickhouse.py --input output/run_*/events.jsonl.gz --truncate
+python scripts/load_to_clickhouse.py --input output/run_*/events.jsonl.gz --run-id baseline
 
 # 4. Открыть Superset
 # http://localhost:8088 (admin / admin123)

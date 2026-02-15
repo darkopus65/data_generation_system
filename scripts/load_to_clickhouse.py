@@ -3,8 +3,9 @@
 Load generated events data into ClickHouse.
 
 Usage:
-    python scripts/load_to_clickhouse.py --input output/run_YYYYMMDD_HHMMSS/events.jsonl.gz
-    python scripts/load_to_clickhouse.py --input output/run_YYYYMMDD_HHMMSS/events.parquet
+    python scripts/load_to_clickhouse.py --input output/run_YYYYMMDD_HHMMSS/events.jsonl.gz --run-id baseline
+    python scripts/load_to_clickhouse.py --input output/run_YYYYMMDD_HHMMSS/events.parquet --run-id exp_fast_energy
+    python scripts/load_to_clickhouse.py --delete-run baseline
 """
 
 import argparse
@@ -26,8 +27,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Load events into ClickHouse")
     parser.add_argument(
         "--input", "-i",
-        required=True,
+        default=None,
         help="Path to events file (jsonl.gz or parquet)"
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Run identifier (e.g.: baseline, exp_fast_energy). Required for loading and identifying data runs."
+    )
+    parser.add_argument(
+        "--delete-run",
+        help="Delete all data for the specified run_id and exit"
     )
     parser.add_argument(
         "--host",
@@ -69,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--truncate",
         action="store_true",
-        help="Truncate table before loading"
+        help="Delete existing data for this run_id before loading"
     )
     return parser.parse_args()
 
@@ -195,11 +205,50 @@ def flatten_event(event: dict) -> dict:
     }
 
 
+def _show_run_stats(client, database: str, table: str):
+    """Show statistics for all runs in the table."""
+    print(f"\n{'='*60}")
+    print(f"Run statistics in {database}.{table}:")
+    print(f"{'='*60}")
+    result = client.query(
+        f"SELECT run_id, count() as events, uniqExact(user_id) as users "
+        f"FROM {database}.{table} "
+        f"GROUP BY run_id "
+        f"ORDER BY run_id"
+    )
+    if result.result_rows:
+        print(f"{'Run ID':<30} {'Events':>12} {'Users':>10}")
+        print(f"{'-'*30} {'-'*12} {'-'*10}")
+        for row in result.result_rows:
+            print(f"{row[0]:<30} {row[1]:>12,} {row[2]:>10,}")
+    else:
+        print("No data in table.")
+    print()
+
+
 def main():
     args = parse_args()
-    filepath = Path(args.input)
 
-    if not filepath.exists():
+    # Handle --delete-run mode (does not require --input or --run-id)
+    if args.delete_run:
+        if not args.input:
+            # --delete-run can work without --input, connect and delete
+            pass
+        # Will handle after connection
+    else:
+        # Loading mode: both --input and --run-id are required
+        if not args.run_id:
+            print("Error: --run-id is required when loading data.")
+            print("Usage: python scripts/load_to_clickhouse.py --input <file> --run-id <name>")
+            sys.exit(1)
+        if not args.input:
+            print("Error: --input is required when loading data.")
+            print("Usage: python scripts/load_to_clickhouse.py --input <file> --run-id <name>")
+            sys.exit(1)
+
+    filepath = Path(args.input) if args.input else None
+
+    if filepath and not filepath.exists():
         print(f"Error: File not found: {filepath}")
         sys.exit(1)
 
@@ -221,10 +270,25 @@ def main():
         print(f"Error connecting to ClickHouse: {e}")
         sys.exit(1)
 
+    # Delete run if requested
+    if args.delete_run:
+        run_id = args.delete_run
+        print(f"Deleting data for run_id='{run_id}'...")
+        client.command(
+            f"ALTER TABLE {args.database}.{args.table} DELETE WHERE run_id = '{run_id}'"
+        )
+        print(f"Delete command issued for run_id='{run_id}'.")
+        # Show remaining runs
+        _show_run_stats(client, args.database, args.table)
+        return
+
     # Truncate if requested
     if args.truncate:
-        print(f"Truncating table {args.database}.{args.table}...")
-        client.command(f"TRUNCATE TABLE {args.database}.{args.table}")
+        print(f"Deleting existing data for run_id='{args.run_id}'...")
+        client.command(
+            f"ALTER TABLE {args.database}.{args.table} DELETE WHERE run_id = '{args.run_id}'"
+        )
+        print(f"Existing data for run_id='{args.run_id}' deleted.")
 
     # Determine file type and reader
     if filepath.suffix == ".gz" or str(filepath).endswith(".jsonl.gz"):
@@ -240,6 +304,7 @@ def main():
 
     # Column names for insert
     columns = [
+        "run_id",
         "event_id", "event_name", "event_timestamp",
         "user_id", "session_id",
         "device_id", "platform", "os_version", "app_version",
@@ -256,7 +321,7 @@ def main():
     print("Loading data...")
     for batch in reader:
         batch_num += 1
-        rows = [[row[col] for col in columns] for row in batch]
+        rows = [[args.run_id] + [row[col] for col in columns[1:]] for row in batch]
 
         try:
             client.insert(
@@ -273,9 +338,8 @@ def main():
 
     print(f"\nDone! Loaded {total_rows} events into {args.database}.{args.table}")
 
-    # Show stats
-    result = client.query(f"SELECT count() FROM {args.database}.{args.table}")
-    print(f"Total rows in table: {result.result_rows[0][0]}")
+    # Show stats by run_id
+    _show_run_stats(client, args.database, args.table)
 
 
 if __name__ == "__main__":

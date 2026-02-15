@@ -37,7 +37,7 @@ pip install clickhouse-connect
 # Загрузить данные
 python scripts/load_to_clickhouse.py \
     --input output/run_*/events.jsonl.gz \
-    --truncate
+    --run-id baseline
 ```
 
 ### 5. Доступ к системам
@@ -182,6 +182,147 @@ SELECT
     round(did_gacha / installs * 100, 2) as gacha_rate,
     round(did_purchase / installs * 100, 2) as conversion_rate
 FROM funnel;
+```
+
+---
+
+## Работа с прогонами (run_id)
+
+Каждая загрузка данных маркируется идентификатором прогона (`run_id`). Это позволяет загружать несколько датасетов в одну таблицу и сравнивать метрики между ними.
+
+### Загрузка нескольких прогонов
+
+```bash
+# Базовый датасет
+python generate.py --seed 42
+python scripts/load_to_clickhouse.py \
+    --input output/run_*/events.jsonl.gz \
+    --run-id baseline
+
+# Эксперимент с быстрой энергией
+python generate.py --seed 42 --override configs/overrides/small_test.yaml
+python scripts/load_to_clickhouse.py \
+    --input output/run_*/events.jsonl.gz \
+    --run-id exp_small_test
+
+# Эксперимент с плохим трафиком
+python generate.py --seed 42 --override configs/overrides/bad_traffic.yaml
+python scripts/load_to_clickhouse.py \
+    --input output/run_*/events.jsonl.gz \
+    --run-id exp_bad_traffic
+```
+
+### Просмотр загруженных прогонов
+
+```sql
+SELECT run_id, count() as events, uniqExact(user_id) as users
+FROM game_analytics.events
+GROUP BY run_id
+ORDER BY run_id;
+```
+
+### Сравнение метрик между прогонами
+
+```sql
+-- Ключевые метрики по прогонам
+SELECT
+    run_id,
+    uniqExact(user_id) as total_users,
+    countIf(event_name = 'iap_purchase') as total_purchases,
+    uniqExactIf(user_id, event_name = 'iap_purchase') as paying_users,
+    round(paying_users / total_users * 100, 2) as conversion_pct,
+    sumIf(JSONExtractFloat(event_properties, 'price_usd'), event_name = 'iap_purchase') as revenue
+FROM game_analytics.events
+GROUP BY run_id
+ORDER BY run_id;
+```
+
+### Удаление прогона
+
+```bash
+# Удалить данные конкретного прогона
+python scripts/load_to_clickhouse.py --delete-run exp_bad_traffic
+
+# Перезагрузить прогон (удалить старые данные + загрузить новые)
+python scripts/load_to_clickhouse.py \
+    --input output/run_*/events.jsonl.gz \
+    --run-id baseline --truncate
+```
+
+---
+
+## Командная работа
+
+Для курса предусмотрена изолированная инфраструктура для каждой команды.
+
+### Настройка команд
+
+```bash
+# Создать базы и пользователей для 13 команд
+python scripts/setup_teams.py --teams 13
+
+# Удалить все командные базы и пользователей
+python scripts/setup_teams.py --teams 13 --drop
+```
+
+Скрипт создаст файл `teams_credentials.csv` с логинами и паролями.
+
+### Структура доступов
+
+| Что | Команда | Права |
+|-----|---------|-------|
+| `game_analytics.*` | Все команды | Только чтение (SELECT) |
+| `team_XX.*` | team_XX | Полный доступ (ALL) |
+
+Каждая команда:
+- **Читает** эталонные данные из `game_analytics.events`
+- **Пишет** свои данные в `team_XX.events`
+- **Создаёт** свои таблицы в `team_XX`
+
+### Подключение команд к ClickHouse
+
+```bash
+# Подключение через CLI
+clickhouse-client --host localhost --port 9000 \
+    --user team_01 --password team_pass_01
+
+# Подключение из Python
+import clickhouse_connect
+client = clickhouse_connect.get_client(
+    host='localhost', port=8123,
+    username='team_01', password='team_pass_01',
+    database='team_01'
+)
+```
+
+### Загрузка данных в командную базу
+
+```bash
+# Генерация данных с нужными параметрами
+python generate.py --seed 100
+
+# Загрузка в базу команды
+python scripts/load_to_clickhouse.py \
+    --input output/run_*/events.jsonl.gz \
+    --run-id my_experiment \
+    --database team_01 \
+    --user team_01 \
+    --password team_pass_01
+```
+
+### Настройка Superset для команд
+
+Каждая команда может подключить свою базу в Superset:
+
+1. Войти в Superset: http://localhost:8088
+2. **Settings** → **Database Connections** → **+ Database**
+3. Connection string для своей базы:
+```
+clickhousedb://team_01:team_pass_01@clickhouse:8123/team_01
+```
+4. Для чтения эталонных данных использовать SQL Lab с кросс-базовыми запросами:
+```sql
+SELECT * FROM game_analytics.events WHERE run_id = 'baseline' LIMIT 100
 ```
 
 ---
