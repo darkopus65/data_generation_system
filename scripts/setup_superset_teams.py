@@ -237,11 +237,14 @@ with app.app_context():
     for name in sorted(all_db_access.keys()):
         print(f"    {{name}}")
 
-    # SQL Lab permissions (exact names from this Superset instance)
+    # SQL Lab permissions (exact names from this Superset 3.1.0 instance)
     SQLLAB_PERMS = [
+        # Menu visibility
         ("menu_access", "SQL Lab"),
         ("menu_access", "SQL Editor"),
         ("menu_access", "Query Search"),
+        ("menu_access", "Saved Queries"),
+        # SQL Lab core
         ("can_read", "SQLLab"),
         ("can_execute_sql_query", "SQLLab"),
         ("can_get_results", "SQLLab"),
@@ -251,11 +254,25 @@ with app.app_context():
         ("can_my_queries", "SqlLab"),
         ("can_sqllab", "Superset"),
         ("can_sqllab_history", "Superset"),
+        # TabStateView — required for SQL Lab tabs to work
+        ("can_activate", "TabStateView"),
+        ("can_get", "TabStateView"),
+        ("can_post", "TabStateView"),
+        ("can_put", "TabStateView"),
+        ("can_delete", "TabStateView"),
+        ("can_migrate_query", "TabStateView"),
+        ("can_delete_query", "TabStateView"),
+        # TableSchemaView — for schema browser in SQL Lab
+        ("can_delete", "TableSchemaView"),
+        ("can_expanded", "TableSchemaView"),
+        ("can_post", "TableSchemaView"),
+        # Queries
         ("can_read", "Query"),
         ("can_read", "SavedQuery"),
         ("can_write", "SavedQuery"),
         ("can_list", "SavedQuery"),
         ("can_export", "SavedQuery"),
+        # Database visibility
         ("can_read", "Database"),
     ]
 
