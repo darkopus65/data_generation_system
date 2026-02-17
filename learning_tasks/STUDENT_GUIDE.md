@@ -389,7 +389,7 @@ Superset — это BI-инструмент для построения граф
 4. Тип: **ClickHouse Connect**
 5. Строка подключения:
    ```
-   clickhousedb://team_XX:team_pass_XX@clickhouse:8123/team_XX
+   clickhousedb://team_XX:team_pass_XX@clickhouse:8123/game_analytics
    ```
 6. **Проверить подключение** → зелёная галочка → **Подключить**
 
