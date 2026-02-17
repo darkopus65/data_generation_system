@@ -12,6 +12,9 @@ Each team gets:
 This ensures teams see only their own databases/datasets in Superset,
 while still having read-only access to shared game_analytics data.
 
+Everything runs via `docker exec` inside the Superset container using
+the FAB SecurityManager API — no REST API needed.
+
 Prerequisites:
     1. Superset and ClickHouse must be running (docker-compose up)
     2. ClickHouse teams must be created first (python scripts/setup_teams.py)
@@ -19,12 +22,9 @@ Prerequisites:
 
 Usage:
     python scripts/setup_superset_teams.py
-    python scripts/setup_superset_teams.py --teams 15
-    python scripts/setup_superset_teams.py --teams 15 --superset-password-prefix my_prefix_
+    python scripts/setup_superset_teams.py --teams 18
+    python scripts/setup_superset_teams.py --teams 18 --superset-password-prefix my_prefix_
     python scripts/setup_superset_teams.py --drop  # Remove all team configs from Superset
-
-Requirements:
-    pip install requests
 """
 
 import argparse
@@ -32,32 +32,18 @@ import csv
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import Optional
-
-try:
-    import requests
-except ImportError:
-    print("Error: requests not installed.")
-    print("Run: pip install requests")
-    sys.exit(1)
 
 
 # ============================================================
 # Configuration (matches existing scripts)
 # ============================================================
 
-# Superset connection (same as setup_superset_dashboards.py)
-SUPERSET_URL = "http://localhost:8088"
-SUPERSET_ADMIN_USER = "admin"
-SUPERSET_ADMIN_PASSWORD = "admin123"
-
 # ClickHouse (Docker internal hostname, same as setup_superset_dashboards.py)
 CLICKHOUSE_HOST = "clickhouse"
 CLICKHOUSE_PORT = 8123
 
-# Shared database (created by setup_superset_dashboards.py)
+# Shared database name in Superset (created by setup_superset_dashboards.py)
 SHARED_DB_NAME = "ClickHouse Game Analytics"
 SHARED_DB_USER = "superset"
 SHARED_DB_PASSWORD = "superset123"
@@ -66,88 +52,8 @@ SHARED_DB_DATABASE = "game_analytics"
 # Docker container name (from docker-compose.yml)
 SUPERSET_CONTAINER = "superset"
 
-
-# ============================================================
-# Superset REST API Client (reused from setup_superset_dashboards.py)
-# ============================================================
-
-class SupersetAPI:
-    """Superset API client."""
-
-    def __init__(self, base_url: str, username: str, password: str):
-        self.base_url = base_url.rstrip("/")
-        self.session = requests.Session()
-        self.access_token = None
-        self.csrf_token = None
-        self._login(username, password)
-
-    def _login(self, username: str, password: str):
-        """Login and get access token."""
-        resp = self.session.get(f"{self.base_url}/api/v1/security/csrf_token/")
-        if resp.status_code == 200:
-            self.csrf_token = resp.json().get("result")
-            self.session.headers["X-CSRFToken"] = self.csrf_token
-
-        login_data = {
-            "username": username,
-            "password": password,
-            "provider": "db",
-            "refresh": True,
-        }
-        resp = self.session.post(
-            f"{self.base_url}/api/v1/security/login",
-            json=login_data,
-        )
-        if resp.status_code != 200:
-            raise Exception(f"Login failed: {resp.text}")
-
-        data = resp.json()
-        self.access_token = data.get("access_token")
-        self.session.headers["Authorization"] = f"Bearer {self.access_token}"
-
-    def _request(self, method: str, endpoint: str, **kwargs) -> dict:
-        """Make API request."""
-        url = f"{self.base_url}/api/v1{endpoint}"
-        resp = self.session.request(method, url, **kwargs)
-        if resp.status_code >= 400:
-            print(f"  API Error {resp.status_code}: {resp.text[:200]}")
-            return {}
-        return resp.json() if resp.text else {}
-
-    def get_databases(self) -> list:
-        """Get list of all database connections (handles pagination)."""
-        all_results = []
-        page = 0
-        page_size = 100
-        while True:
-            data = self._request(
-                "GET", f"/database/?q=(page:{page},page_size:{page_size})"
-            )
-            results = data.get("result", [])
-            all_results.extend(results)
-            if len(results) < page_size:
-                break
-            page += 1
-        return all_results
-
-    def create_database(self, name: str, sqlalchemy_uri: str) -> Optional[int]:
-        """Create database connection."""
-        data = {
-            "database_name": name,
-            "sqlalchemy_uri": sqlalchemy_uri,
-            "expose_in_sqllab": True,
-            "allow_run_async": True,
-            "allow_ctas": False,
-            "allow_cvas": False,
-            "allow_dml": False,
-        }
-        result = self._request("POST", "/database/", json=data)
-        return result.get("id")
-
-    def delete_database(self, db_id: int) -> bool:
-        """Delete database connection."""
-        result = self._request("DELETE", f"/database/{db_id}")
-        return result is not None
+# Default Superset URL (for credentials output only, not used for API)
+SUPERSET_URL = "http://localhost:8088"
 
 
 # ============================================================
@@ -164,143 +70,66 @@ def team_display_name(i: int) -> str:
     return f"Team {i:02d}"
 
 
-def wait_for_superset(url: str, max_retries: int = 30):
-    """Wait for Superset to be healthy."""
-    print("Waiting for Superset to be ready...")
-    for _ in range(max_retries):
-        try:
-            resp = requests.get(f"{url}/health", timeout=5)
-            if resp.status_code == 200:
-                print("  Superset is ready!")
-                return True
-        except Exception:
-            pass
-        time.sleep(2)
-    print("  ERROR: Superset is not responding")
-    return False
+def run_in_container(script: str, timeout: int = 180) -> bool:
+    """Execute a Python script inside the Superset Docker container via stdin."""
+    result = subprocess.run(
+        ["docker", "exec", "-i", SUPERSET_CONTAINER, "python"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        # Filter out common noisy warnings
+        stderr_lines = [
+            line for line in result.stderr.splitlines()
+            if not any(w in line for w in [
+                "WARNING", "DeprecationWarning", "UserWarning",
+                "SAWarning", "RemovedIn", "pkg_resources",
+            ])
+        ]
+        if stderr_lines:
+            print("STDERR:", "\n".join(stderr_lines))
+    return result.returncode == 0
 
 
 # ============================================================
-# Phase 1: Database connections via REST API
-# ============================================================
-
-def ensure_database_connections(
-    api: SupersetAPI,
-    num_teams: int,
-    ch_password_prefix: str,
-) -> dict:
-    """
-    Create ClickHouse database connections in Superset for each team.
-    Returns dict: {"shared": db_id, "team_01": db_id, ...}
-    """
-    databases = api.get_databases()
-    existing = {db["database_name"]: db["id"] for db in databases}
-    print(f"  Found {len(existing)} existing database connections")
-    db_ids = {}
-
-    # 1. Ensure shared game_analytics connection exists
-    if SHARED_DB_NAME in existing:
-        db_ids["shared"] = existing[SHARED_DB_NAME]
-        print(f"  [shared] Already exists (id={db_ids['shared']})")
-    else:
-        uri = (
-            f"clickhousedb://{SHARED_DB_USER}:{SHARED_DB_PASSWORD}"
-            f"@{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/{SHARED_DB_DATABASE}"
-        )
-        db_id = api.create_database(SHARED_DB_NAME, uri)
-        if db_id:
-            db_ids["shared"] = db_id
-            print(f"  [shared] Created (id={db_id})")
-        else:
-            print("  [shared] FAILED to create — may already exist under a different name")
-            print("  Existing databases:")
-            for name, did in sorted(existing.items()):
-                print(f"    '{name}' (id={did})")
-            print(f"\n  Looking for a database containing 'game_analytics' or 'Game Analytics'...")
-            for name, did in existing.items():
-                if "game_analytics" in name.lower() or "game analytics" in name.lower():
-                    db_ids["shared"] = did
-                    print(f"  [shared] Found as '{name}' (id={did})")
-                    break
-            if "shared" not in db_ids:
-                print("  ERROR: Could not find shared database!")
-                sys.exit(1)
-
-    # 2. Create per-team database connections
-    for i in range(1, num_teams + 1):
-        name = team_name(i)
-        display = team_display_name(i)
-
-        if display in existing:
-            db_ids[name] = existing[display]
-            print(f"  [{name}] Already exists (id={db_ids[name]})")
-            continue
-
-        password = f"{ch_password_prefix}{i:02d}"
-        uri = (
-            f"clickhousedb://{name}:{password}"
-            f"@{CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}/{name}"
-        )
-        db_id = api.create_database(display, uri)
-        if db_id:
-            db_ids[name] = db_id
-            print(f"  [{name}] Created '{display}' (id={db_id})")
-        else:
-            # Might already exist but wasn't in our list — re-fetch
-            refreshed = {db["database_name"]: db["id"] for db in api.get_databases()}
-            if display in refreshed:
-                db_ids[name] = refreshed[display]
-                print(f"  [{name}] Found after retry (id={db_ids[name]})")
-            else:
-                print(f"  [{name}] FAILED to create '{display}'!")
-
-    return db_ids
-
-
-# ============================================================
-# Phase 2: Roles & Users via docker exec + FAB SecurityManager
+# Setup script (runs inside Superset container)
 # ============================================================
 
 def generate_setup_script(
     num_teams: int,
-    db_ids: dict,
+    ch_password_prefix: str,
     superset_password_prefix: str,
 ) -> str:
     """
     Generate Python script to run inside the Superset container.
-    Creates roles with SQL Lab + database access, and users with Gamma + team role.
+    Creates database connections, roles, and users — all via SQLAlchemy + FAB.
     """
-    shared_db_id = db_ids["shared"]
-
     teams_config = []
     for i in range(1, num_teams + 1):
         name = team_name(i)
         display = team_display_name(i)
-        db_id = db_ids.get(name)
-        if db_id is None:
-            continue
-
         teams_config.append({
             "team_name": name,
             "role_name": f"{name}_role",
             "display_name": display,
-            "db_id": db_id,
-            "db_display_name": display,
-            "shared_db_id": shared_db_id,
-            "shared_db_name": SHARED_DB_NAME,
-            "username": name,
-            "password": f"{superset_password_prefix}{i:02d}",
+            "ch_username": name,
+            "ch_password": f"{ch_password_prefix}{i:02d}",
+            "ch_database": name,
+            "superset_username": name,
+            "superset_password": f"{superset_password_prefix}{i:02d}",
             "email": f"{name}@course.local",
         })
 
     teams_json = json.dumps(teams_config, ensure_ascii=False)
 
-    # The script that runs INSIDE the superset container
     script = f'''
 import sys
 import json
 
-# Try different import paths for Superset versions
 try:
     from superset.app import create_app
 except ImportError:
@@ -310,26 +139,109 @@ app = create_app()
 
 with app.app_context():
     from superset.extensions import db as sdb
-    sm = app.appbuilder.sm
+    from superset.models.core import Database as DatabaseModel
     session = sdb.session
+    sm = app.appbuilder.sm
 
     teams = json.loads("""{teams_json}""")
 
-    # Find Gamma role (base for all students)
+    CLICKHOUSE_HOST = "{CLICKHOUSE_HOST}"
+    CLICKHOUSE_PORT = {CLICKHOUSE_PORT}
+    SHARED_DB_NAME = "{SHARED_DB_NAME}"
+    SHARED_DB_USER = "{SHARED_DB_USER}"
+    SHARED_DB_PASSWORD = "{SHARED_DB_PASSWORD}"
+    SHARED_DB_DATABASE = "{SHARED_DB_DATABASE}"
+
+    # ---- Phase 1: Database connections ----
+    print("=== Phase 1: Database connections ===")
+
+    # Get existing connections
+    existing_dbs = {{d.database_name: d for d in session.query(DatabaseModel).all()}}
+    print(f"  Found {{len(existing_dbs)}} existing connections")
+
+    # Ensure shared game_analytics connection
+    shared_db = None
+    if SHARED_DB_NAME in existing_dbs:
+        shared_db = existing_dbs[SHARED_DB_NAME]
+        print(f"  [shared] Already exists (id={{shared_db.id}})")
+    else:
+        # Look for any game_analytics connection
+        for name, db_obj in existing_dbs.items():
+            if "game_analytics" in name.lower() or "game analytics" in name.lower():
+                shared_db = db_obj
+                print(f"  [shared] Found as '{{name}}' (id={{shared_db.id}})")
+                break
+        if not shared_db:
+            # Create it
+            shared_db = DatabaseModel(
+                database_name=SHARED_DB_NAME,
+                sqlalchemy_uri=f"clickhousedb://{{SHARED_DB_USER}}:{{SHARED_DB_PASSWORD}}@{{CLICKHOUSE_HOST}}:{{CLICKHOUSE_PORT}}/{{SHARED_DB_DATABASE}}",
+                expose_in_sqllab=True,
+                allow_run_async=True,
+                allow_ctas=False,
+                allow_cvas=False,
+                allow_dml=False,
+            )
+            session.add(shared_db)
+            session.flush()
+            print(f"  [shared] Created (id={{shared_db.id}})")
+
+    # Create per-team database connections
+    team_dbs = {{}}
+    for team in teams:
+        display = team["display_name"]
+        if display in existing_dbs:
+            team_dbs[team["team_name"]] = existing_dbs[display]
+            print(f"  [{{team['team_name']}}] Already exists (id={{existing_dbs[display].id}})")
+            continue
+
+        db_obj = DatabaseModel(
+            database_name=display,
+            sqlalchemy_uri=f"clickhousedb://{{team['ch_username']}}:{{team['ch_password']}}@{{CLICKHOUSE_HOST}}:{{CLICKHOUSE_PORT}}/{{team['ch_database']}}",
+            expose_in_sqllab=True,
+            allow_run_async=True,
+            allow_ctas=False,
+            allow_cvas=False,
+            allow_dml=False,
+        )
+        session.add(db_obj)
+        session.flush()  # Get the id
+        team_dbs[team["team_name"]] = db_obj
+        print(f"  [{{team['team_name']}}] Created '{{display}}' (id={{db_obj.id}})")
+
+    session.commit()
+    print(f"  Database connections ready: {{len(team_dbs)}} teams + 1 shared")
+
+    # Refresh permissions so database_access entries are created
+    print("\\n  Syncing permissions...")
+    sm.sync_role_definitions()
+
+    # ---- Phase 2: Roles and users ----
+    print("\\n=== Phase 2: Roles and users ===")
+
     gamma_role = sm.find_role("Gamma")
     if not gamma_role:
         print("ERROR: Gamma role not found!")
         sys.exit(1)
-    print(f"Found Gamma role (id={{gamma_role.id}})")
+    print(f"  Found Gamma role (id={{gamma_role.id}})")
 
-    # Permissions needed for SQL Lab access
-    # Names discovered from: SELECT permission.name, view_menu.name FROM ab_permission_view
+    # Discover all database_access permissions
+    from flask_appbuilder.security.sqla.models import PermissionView, Permission, ViewMenu
+    all_db_access = {{}}
+    perm_obj = session.query(Permission).filter_by(name="database_access").first()
+    if perm_obj:
+        pvs = session.query(PermissionView).filter_by(permission_id=perm_obj.id).all()
+        for pv in pvs:
+            all_db_access[pv.view_menu.name] = pv
+    print(f"  Found {{len(all_db_access)}} database_access permissions")
+    for name in sorted(all_db_access.keys()):
+        print(f"    {{name}}")
+
+    # SQL Lab permissions (exact names from this Superset instance)
     SQLLAB_PERMS = [
-        # Menu visibility
         ("menu_access", "SQL Lab"),
         ("menu_access", "SQL Editor"),
         ("menu_access", "Query Search"),
-        # SQL Lab core functionality
         ("can_read", "SQLLab"),
         ("can_execute_sql_query", "SQLLab"),
         ("can_get_results", "SQLLab"),
@@ -339,13 +251,11 @@ with app.app_context():
         ("can_my_queries", "SqlLab"),
         ("can_sqllab", "Superset"),
         ("can_sqllab_history", "Superset"),
-        # Queries
         ("can_read", "Query"),
         ("can_read", "SavedQuery"),
         ("can_write", "SavedQuery"),
         ("can_list", "SavedQuery"),
         ("can_export", "SavedQuery"),
-        # Database visibility in SQL Lab dropdown
         ("can_read", "Database"),
     ]
 
@@ -362,53 +272,63 @@ with app.app_context():
             print(f"  Role exists: {{role_name}}")
 
         # 2. Add SQL Lab permissions
+        added = 0
         for perm_name, view_name in SQLLAB_PERMS:
             pv = sm.find_permission_view_menu(perm_name, view_name)
             if pv:
                 sm.add_permission_role(role, pv)
+                added += 1
             else:
-                print(f"  WARN: permission '{{perm_name}}' on '{{view_name}}' not found, skipping")
+                print(f"  WARN: '{{perm_name}}' on '{{view_name}}' not found")
+        print(f"  Added {{added}}/{{len(SQLLAB_PERMS)}} SQL Lab permissions")
 
-        # 3. Add database access for team's own DB
-        # Format in Superset 3.1.0: [DatabaseName].(id:X)
-        team_db_perm = f"[{{team['db_display_name']}}].(id:{{team['db_id']}})"
-        pv = sm.find_permission_view_menu("database_access", team_db_perm)
-        if pv:
-            sm.add_permission_role(role, pv)
-            print(f"  Granted database_access on {{team_db_perm}}")
-        else:
-            print(f"  WARN: database_access '{{team_db_perm}}' not found")
+        # 3. Add database_access for team's own DB
+        team_db = team_dbs.get(team["team_name"])
+        if team_db:
+            # Find the matching permission by checking all db_access perms
+            found = False
+            for perm_view_name, pv in all_db_access.items():
+                if f"(id:{{team_db.id}})" in perm_view_name:
+                    sm.add_permission_role(role, pv)
+                    print(f"  Granted: database_access on {{perm_view_name}}")
+                    found = True
+                    break
+            if not found:
+                print(f"  WARN: No database_access permission found for id={{team_db.id}}")
 
-        # 4. Add database access for shared game_analytics DB
-        shared_perm = f"[{{team['shared_db_name']}}].(id:{{team['shared_db_id']}})"
-        pv = sm.find_permission_view_menu("database_access", shared_perm)
-        if pv:
-            sm.add_permission_role(role, pv)
-            print(f"  Granted database_access on {{shared_perm}}")
-        else:
-            print(f"  WARN: database_access '{{shared_perm}}' not found")
+        # 4. Add database_access for shared DB
+        if shared_db:
+            found = False
+            for perm_view_name, pv in all_db_access.items():
+                if f"(id:{{shared_db.id}})" in perm_view_name:
+                    sm.add_permission_role(role, pv)
+                    print(f"  Granted: database_access on {{perm_view_name}}")
+                    found = True
+                    break
+            if not found:
+                print(f"  WARN: No database_access permission found for shared db id={{shared_db.id}}")
 
-        # 5. Create or update Superset user
-        user = sm.find_user(username=team["username"])
+        # 5. Create or update user
+        user = sm.find_user(username=team["superset_username"])
         if user:
             user.roles = [gamma_role, role]
             session.commit()
-            print(f"  User exists, updated roles: {{team['username']}}")
+            print(f"  User exists, updated roles: {{team['superset_username']}}")
         else:
             user = sm.add_user(
-                username=team["username"],
+                username=team["superset_username"],
                 first_name=team["display_name"],
                 last_name="Student",
                 email=team["email"],
                 role=gamma_role,
-                password=team["password"],
+                password=team["superset_password"],
             )
             if user:
                 user.roles = [gamma_role, role]
                 session.commit()
-                print(f"  Created user: {{team['username']}}")
+                print(f"  Created user: {{team['superset_username']}}")
             else:
-                print(f"  FAILED to create user: {{team['username']}}")
+                print(f"  FAILED to create user: {{team['superset_username']}}")
 
     session.commit()
     print("\\n=== All teams configured successfully! ===")
@@ -417,8 +337,14 @@ with app.app_context():
 
 
 def generate_drop_script(num_teams: int) -> str:
-    """Generate Python script to remove team users and roles from Superset."""
-    team_names = json.dumps([team_name(i) for i in range(1, num_teams + 1)])
+    """Generate Python script to remove team users, roles, and DB connections."""
+    teams = []
+    for i in range(1, num_teams + 1):
+        teams.append({
+            "name": team_name(i),
+            "display": team_display_name(i),
+        })
+    teams_json = json.dumps(teams)
 
     script = f'''
 import sys
@@ -433,12 +359,16 @@ app = create_app()
 
 with app.app_context():
     from superset.extensions import db as sdb
-    sm = app.appbuilder.sm
+    from superset.models.core import Database as DatabaseModel
     session = sdb.session
+    sm = app.appbuilder.sm
 
-    teams = json.loads("""{team_names}""")
+    teams = json.loads("""{teams_json}""")
 
-    for name in teams:
+    for team in teams:
+        name = team["name"]
+        display = team["display"]
+
         # Delete user
         user = sm.find_user(username=name)
         if user:
@@ -455,31 +385,18 @@ with app.app_context():
         else:
             print(f"  Role not found: {{name}}_role")
 
+        # Delete database connection
+        db_obj = session.query(DatabaseModel).filter_by(database_name=display).first()
+        if db_obj:
+            session.delete(db_obj)
+            print(f"  Deleted database connection: {{display}}")
+        else:
+            print(f"  DB connection not found: {{display}}")
+
     session.commit()
-    print("\\nSuperset users and roles cleanup complete!")
+    print("\\nCleanup complete!")
 '''
     return script
-
-
-def run_in_container(script: str) -> bool:
-    """Execute a Python script inside the Superset Docker container."""
-    result = subprocess.run(
-        ["docker", "exec", "-i", SUPERSET_CONTAINER, "python", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        # Filter out common warnings
-        stderr_lines = [
-            line for line in result.stderr.splitlines()
-            if "WARNING" not in line and "DeprecationWarning" not in line
-        ]
-        if stderr_lines:
-            print("STDERR:", "\n".join(stderr_lines))
-    return result.returncode == 0
 
 
 # ============================================================
@@ -537,8 +454,8 @@ def parse_args():
     parser.add_argument(
         "--teams", "-n",
         type=int,
-        default=15,
-        help="Number of teams (default: 15)",
+        default=18,
+        help="Number of teams (default: 18)",
     )
     parser.add_argument(
         "--clickhouse-password-prefix",
@@ -553,17 +470,7 @@ def parse_args():
     parser.add_argument(
         "--superset-url",
         default=SUPERSET_URL,
-        help=f"Superset URL (default: {SUPERSET_URL})",
-    )
-    parser.add_argument(
-        "--superset-user",
-        default=SUPERSET_ADMIN_USER,
-        help=f"Superset admin username (default: {SUPERSET_ADMIN_USER})",
-    )
-    parser.add_argument(
-        "--superset-password",
-        default=SUPERSET_ADMIN_PASSWORD,
-        help=f"Superset admin password (default: {SUPERSET_ADMIN_PASSWORD})",
+        help=f"Superset URL for credentials file (default: {SUPERSET_URL})",
     )
     parser.add_argument(
         "--container",
@@ -573,7 +480,7 @@ def parse_args():
     parser.add_argument(
         "--drop",
         action="store_true",
-        help="Remove all team users, roles, and database connections from Superset",
+        help="Remove all team users, roles, and database connections",
     )
     parser.add_argument(
         "--output",
@@ -599,32 +506,11 @@ def main():
         print("Removing team configurations from Superset")
         print("=" * 60)
 
-        if not wait_for_superset(args.superset_url):
-            sys.exit(1)
-
-        # Delete database connections via REST API
-        print("\nDeleting team database connections...")
-        try:
-            api = SupersetAPI(args.superset_url, args.superset_user, args.superset_password)
-            databases = api.get_databases()
-            for i in range(1, args.teams + 1):
-                display = team_display_name(i)
-                for db in databases:
-                    if db.get("database_name") == display:
-                        api.delete_database(db["id"])
-                        print(f"  Deleted connection: {display}")
-                        break
-                else:
-                    print(f"  Connection not found: {display}")
-        except Exception as e:
-            print(f"  Warning: Could not delete database connections: {e}")
-
-        # Delete users and roles via docker exec
-        print("\nDeleting team users and roles...")
         script = generate_drop_script(args.teams)
-        run_in_container(script)
-
-        print("\nCleanup complete!")
+        success = run_in_container(script)
+        if not success:
+            print("\nERROR: Cleanup failed!")
+            sys.exit(1)
         return
 
     # --setup mode (default)
@@ -633,42 +519,15 @@ def main():
     print(f"Teams: {args.teams}")
     print("=" * 60)
 
-    if not wait_for_superset(args.superset_url):
-        sys.exit(1)
-
-    # Phase 1: Database connections via REST API
-    print("\n--- Phase 1: Database connections ---")
-    try:
-        api = SupersetAPI(args.superset_url, args.superset_user, args.superset_password)
-        print("  Logged into Superset API")
-    except Exception as e:
-        print(f"ERROR: Could not connect to Superset: {e}")
-        sys.exit(1)
-
-    db_ids = ensure_database_connections(
-        api, args.teams, args.clickhouse_password_prefix,
-    )
-
-    if "shared" not in db_ids:
-        print("ERROR: Shared database connection not found/created!")
-        sys.exit(1)
-
-    created_count = sum(1 for k in db_ids if k.startswith("team_"))
-    print(f"\n  Database connections ready: {created_count} teams + 1 shared")
-
-    # Small delay to let Superset register permissions for new databases
-    print("\n  Waiting for Superset to register permissions...")
-    time.sleep(3)
-
-    # Phase 2: Roles and users via docker exec
-    print("\n--- Phase 2: Roles and users ---")
     script = generate_setup_script(
-        args.teams, db_ids, args.superset_password_prefix,
+        args.teams,
+        args.clickhouse_password_prefix,
+        args.superset_password_prefix,
     )
     success = run_in_container(script)
 
     if not success:
-        print("\nERROR: Failed to create roles/users inside container!")
+        print("\nERROR: Setup failed!")
         print("Check that the Superset container is running:")
         print(f"  docker ps | grep {SUPERSET_CONTAINER}")
         sys.exit(1)
