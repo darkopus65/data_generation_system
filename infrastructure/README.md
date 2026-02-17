@@ -99,8 +99,9 @@ clickhousedb://superset:superset123@clickhouse:9000/game_analytics
 | Пользователь | Пароль | Роль |
 |--------------|--------|------|
 | admin | admin123 | Admin |
+| team_XX | superset_team_XX | Gamma + team_XX_role |
 
-Для добавления студентов используйте **Settings** → **List Users** → **+ User**.
+Командные аккаунты создаются автоматически через `python scripts/setup_superset_teams.py`.
 
 ---
 
@@ -310,19 +311,55 @@ python scripts/load_to_clickhouse.py \
     --password team_pass_01
 ```
 
-### Настройка Superset для команд
+### Настройка Superset для команд (автоматическая)
 
-Каждая команда может подключить свою базу в Superset:
+Скрипт `setup_superset_teams.py` автоматически создаёт для каждой команды:
+- Подключение к базе данных в Superset (видно в SQL Lab)
+- Роль с доступом к SQL Lab + только к своей БД и shared game_analytics
+- Пользователя Superset с изолированным доступом
 
-1. Войти в Superset: http://localhost:8088
-2. **Settings** → **Database Connections** → **+ Database**
-3. Connection string для своей базы:
+```bash
+# Создать пользователей, роли и подключения для 15 команд
+python scripts/setup_superset_teams.py --teams 15
+
+# Удалить все командные конфигурации из Superset
+python scripts/setup_superset_teams.py --teams 15 --drop
+```
+
+Скрипт создаст файл `superset_teams_credentials.csv` с логинами.
+
+**Порядок запуска** (если настраиваете с нуля):
+```bash
+# 1. Запустить инфраструктуру
+cd infrastructure && docker-compose up -d && cd ..
+
+# 2. Создать ClickHouse базы и пользователей для команд
+python scripts/setup_teams.py --teams 15
+
+# 3. Создать shared подключение и дашборды в Superset
+python scripts/setup_superset_dashboards.py
+
+# 4. Создать изолированные аккаунты команд в Superset
+python scripts/setup_superset_teams.py --teams 15
+```
+
+**Что видит каждая команда после входа в Superset:**
+- Вкладку **SQL Lab** для написания SQL запросов
+- В dropdown баз данных: только **"Team XX"** (своя) и **"ClickHouse Game Analytics"** (shared)
+- Только свои датасеты и сохранённые запросы
+
+**Параметры скрипта:**
+```bash
+python scripts/setup_superset_teams.py \
+    --teams 15 \                              # количество команд
+    --clickhouse-password-prefix team_pass_ \ # префикс CH паролей
+    --superset-password-prefix superset_team_ \ # префикс Superset паролей
+    --output superset_teams_credentials.csv
+```
+
+Для ручного подключения (без скрипта) используйте connection string:
 ```
 clickhousedb://team_01:team_pass_01@clickhouse:8123/team_01
-```
-4. Для чтения эталонных данных использовать SQL Lab с кросс-базовыми запросами:
-```sql
-SELECT * FROM game_analytics.events WHERE run_id = 'baseline' LIMIT 100
 ```
 
 ---
