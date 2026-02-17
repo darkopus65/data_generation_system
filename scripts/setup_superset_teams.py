@@ -292,16 +292,29 @@ with app.app_context():
     print(f"Found Gamma role (id={{gamma_role.id}})")
 
     # Permissions needed for SQL Lab access
+    # Names discovered from: SELECT permission.name, view_menu.name FROM ab_permission_view
     SQLLAB_PERMS = [
+        # Menu visibility
         ("menu_access", "SQL Lab"),
         ("menu_access", "SQL Editor"),
+        ("menu_access", "Query Search"),
+        # SQL Lab core functionality
+        ("can_read", "SQLLab"),
+        ("can_execute_sql_query", "SQLLab"),
+        ("can_get_results", "SQLLab"),
+        ("can_estimate_query_cost", "SQLLab"),
+        ("can_export_csv", "SQLLab"),
+        ("can_format_sql", "SQLLab"),
+        ("can_my_queries", "SqlLab"),
+        ("can_sqllab", "Superset"),
+        ("can_sqllab_history", "Superset"),
+        # Queries
         ("can_read", "Query"),
-        ("can_write", "Query"),
         ("can_read", "SavedQuery"),
         ("can_write", "SavedQuery"),
-        ("can_sqllab", "Superset"),
-        ("can_sql_json", "Superset"),
-        ("can_csv", "Superset"),
+        ("can_list", "SavedQuery"),
+        ("can_export", "SavedQuery"),
+        # Database visibility in SQL Lab dropdown
         ("can_read", "Database"),
     ]
 
@@ -326,7 +339,8 @@ with app.app_context():
                 print(f"  WARN: permission '{{perm_name}}' on '{{view_name}}' not found, skipping")
 
         # 3. Add database access for team's own DB
-        team_db_perm = f"[{{team['db_display_name']}}](id:{{team['db_id']}})"
+        # Format in Superset 3.1.0: [DatabaseName].(id:X)
+        team_db_perm = f"[{{team['db_display_name']}}].(id:{{team['db_id']}})"
         pv = sm.find_permission_view_menu("database_access", team_db_perm)
         if pv:
             sm.add_permission_role(role, pv)
@@ -335,7 +349,7 @@ with app.app_context():
             print(f"  WARN: database_access '{{team_db_perm}}' not found")
 
         # 4. Add database access for shared game_analytics DB
-        shared_perm = f"[{{team['shared_db_name']}}](id:{{team['shared_db_id']}})"
+        shared_perm = f"[{{team['shared_db_name']}}].(id:{{team['shared_db_id']}})"
         pv = sm.find_permission_view_menu("database_access", shared_perm)
         if pv:
             sm.add_permission_role(role, pv)
