@@ -115,8 +115,20 @@ class SupersetAPI:
         return resp.json() if resp.text else {}
 
     def get_databases(self) -> list:
-        """Get list of database connections."""
-        return self._request("GET", "/database/").get("result", [])
+        """Get list of all database connections (handles pagination)."""
+        all_results = []
+        page = 0
+        page_size = 100
+        while True:
+            data = self._request(
+                "GET", f"/database/?q=(page:{page},page_size:{page_size})"
+            )
+            results = data.get("result", [])
+            all_results.extend(results)
+            if len(results) < page_size:
+                break
+            page += 1
+        return all_results
 
     def create_database(self, name: str, sqlalchemy_uri: str) -> Optional[int]:
         """Create database connection."""
@@ -181,7 +193,9 @@ def ensure_database_connections(
     Create ClickHouse database connections in Superset for each team.
     Returns dict: {"shared": db_id, "team_01": db_id, ...}
     """
-    existing = {db["database_name"]: db["id"] for db in api.get_databases()}
+    databases = api.get_databases()
+    existing = {db["database_name"]: db["id"] for db in databases}
+    print(f"  Found {len(existing)} existing database connections")
     db_ids = {}
 
     # 1. Ensure shared game_analytics connection exists
@@ -198,8 +212,19 @@ def ensure_database_connections(
             db_ids["shared"] = db_id
             print(f"  [shared] Created (id={db_id})")
         else:
-            print("  [shared] FAILED to create!")
-            sys.exit(1)
+            print("  [shared] FAILED to create — may already exist under a different name")
+            print("  Existing databases:")
+            for name, did in sorted(existing.items()):
+                print(f"    '{name}' (id={did})")
+            print(f"\n  Looking for a database containing 'game_analytics' or 'Game Analytics'...")
+            for name, did in existing.items():
+                if "game_analytics" in name.lower() or "game analytics" in name.lower():
+                    db_ids["shared"] = did
+                    print(f"  [shared] Found as '{name}' (id={did})")
+                    break
+            if "shared" not in db_ids:
+                print("  ERROR: Could not find shared database!")
+                sys.exit(1)
 
     # 2. Create per-team database connections
     for i in range(1, num_teams + 1):
@@ -221,7 +246,13 @@ def ensure_database_connections(
             db_ids[name] = db_id
             print(f"  [{name}] Created '{display}' (id={db_id})")
         else:
-            print(f"  [{name}] FAILED to create '{display}'!")
+            # Might already exist but wasn't in our list — re-fetch
+            refreshed = {db["database_name"]: db["id"] for db in api.get_databases()}
+            if display in refreshed:
+                db_ids[name] = refreshed[display]
+                print(f"  [{name}] Found after retry (id={db_ids[name]})")
+            else:
+                print(f"  [{name}] FAILED to create '{display}'!")
 
     return db_ids
 
